@@ -1,9 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, scoped_session
+import os
 
-# Database connection settings from docker-compose.yml
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:docker@localhost:5432/fit-db"
+# Get DB URL from environment or use fallback for local dev
+
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:docker@localhost:5432/postgres")
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -20,7 +22,5 @@ def get_db():
         db.close()
 
 def init_db():
-    # Import all models here so they are registered with the metadata
     from .models_db import UserModel, MuscleGroupModel, ExerciseModel
-    
-    Base.metadata.create_all(bind=engine) 
+    Base.metadata.create_all(bind=engine)

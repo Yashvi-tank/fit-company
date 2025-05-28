@@ -15,6 +15,13 @@ from .services.fitness_coach_service import calculate_intensity, request_wod
 import datetime
 import os
 import random
+import re
+from datetime import date
+from .models_db import UserExerciseHistoryModel
+from .database import db_session
+from .services.user_service import hash_password
+from .models_db import UserExerciseHistoryModel
+
 
 app = Flask(__name__)
 
@@ -29,13 +36,36 @@ def health():
 def create_user():
     try:
         user_data = request.get_json()
+
+        # Check required fields
+        required_fields = ["email", "name", "role"]
+        for field in required_fields:
+            if field not in user_data:
+                return jsonify({"error": f"'{field}' is required"}), 400
+
+        # Validate email format
+        def is_valid_email(email):
+            return re.match(r"[^@]+@[^@]+\.[^@]+", email) is not None
+
+        if not is_valid_email(user_data["email"]):
+            return jsonify({"error": "Invalid email format"}), 400
+
+        # Validate role value
+        if user_data["role"] not in ["user", "admin"]:
+            return jsonify({"error": "Invalid role, must be 'user' or 'admin'"}), 400
+
+        #  Validate against Pydantic schema
         user = UserSchema.model_validate(user_data)
+
+        # Create user
         created_user = create_user_service(user)
         return jsonify(created_user.model_dump()), 201
+
     except ValidationError as e:
         return jsonify({"error": "Invalid user data", "details": e.errors()}), 400
     except Exception as e:
         return jsonify({"error": "Error creating user", "details": str(e)}), 500
+
 
 @app.route("/users", methods=["GET"])
 @admin_required
@@ -49,32 +79,46 @@ def get_all_users():
 @app.route("/bootstrap/admin", methods=["POST"])
 def create_bootstrap_admin():
     try:
-        # This endpoint should be secured with a special bootstrap key
         bootstrap_key = request.headers.get('X-Bootstrap-Key')
         if not bootstrap_key or bootstrap_key != BOOTSTRAP_KEY:
             return jsonify({"error": "Invalid bootstrap key"}), 401
-            
-        # Check if admin already exists to prevent multiple bootstraps
+
         db = db_session()
         admin_exists = db.query(UserModel).filter(UserModel.role == "admin").first() is not None
         db.close()
-        
+
         if admin_exists:
             return jsonify({"error": "Admin user already exists"}), 409
-            
-        # Create admin user
+
         admin_data = request.get_json()
-        admin_data["role"] = "admin"  # Ensure role is admin
-        
-        admin_user = UserSchema.model_validate(admin_data)
-        created_admin = create_user_service(admin_user)
-        
-        return jsonify(created_admin.model_dump()), 201
-        
+        plain_password = admin_data["password"]  
+        hashed_password = hash_password(plain_password)
+
+        db_user = UserModel(
+            email=admin_data["email"],
+            name=admin_data["name"],
+            role="admin",
+            password_hash=hashed_password
+        )
+
+        db = db_session()
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        db.close()
+
+        return jsonify({
+            "email": db_user.email,
+            "name": db_user.name,
+            "role": db_user.role,
+            "login_password": plain_password
+        }), 201
+
     except ValidationError as e:
         return jsonify({"error": "Invalid admin data", "details": e.errors()}), 400
     except Exception as e:
         return jsonify({"error": "Error creating admin", "details": str(e)}), 500
+
 
 @app.route("/profile/onboarding", methods=["POST"])
 @jwt_required
@@ -119,52 +163,62 @@ def get_profile():
 @app.route("/oauth/token", methods=["POST"])
 def login():
     try:
-        # Check if content type is application/x-www-form-urlencoded (OAuth standard)
         content_type = request.headers.get('Content-Type', '')
+        print(f"[DEBUG] Content-Type: {content_type}")
+
         if 'application/x-www-form-urlencoded' in content_type:
             login_data = {
-                "email": request.form.get("username"),  # OAuth uses 'username' 
+                "email": request.form.get("username"),
                 "password": request.form.get("password")
             }
-        else:  # Fallback to JSON
+        else:
             login_data = request.get_json()
-            
+
+        print(f"[DEBUG] Login payload: {login_data}")
+
         login_schema = LoginSchema.model_validate(login_data)
-        
+        print(f"[DEBUG] Parsed login schema: {login_schema}")
+
         user = authenticate_user(login_schema.email, login_schema.password)
+
         if not user:
+            print("[ERROR] Authentication failed: Invalid credentials")
             return jsonify({"error": "Invalid credentials"}), 401
-        
-        # Create access token with standard OAuth claims
+
+        print(f"[DEBUG] Authenticated user: {user.email}")
+
         access_token_expires = datetime.timedelta(minutes=30)
         token_data = {
             "sub": user.email,
             "name": user.name,
             "role": user.role,
-            "iss": "fit-api", 
-            "iat": datetime.datetime.now(datetime.UTC), 
+            "iss": "fit-api",
+            "iat": datetime.datetime.now(datetime.UTC),
         }
-        
+
         access_token = create_access_token(
-            data=token_data, 
+            data=token_data,
             expires_delta=access_token_expires
         )
-        
+
         token = TokenSchema(
             access_token=access_token,
             token_type="bearer"
         )
-        
-        # Include onboarding status in response
+
         response_data = token.model_dump()
         response_data["onboarded"] = user.onboarded
-        
+
+        print(f"[DEBUG] Token response: {response_data}")
         return jsonify(response_data), 200
-        
+
     except ValidationError as e:
+        print(f"[ERROR] Validation error: {e.errors()}")
         return jsonify({"error": "Invalid login data", "details": e.errors()}), 400
     except Exception as e:
+        print(f"[ERROR] Unexpected exception: {str(e)}")
         return jsonify({"error": "Error logging in", "details": str(e)}), 500
+
 
 @app.route("/fitness/exercises", methods=["GET"])
 def get_exercises():
@@ -229,11 +283,55 @@ def get_wod():
             exercises=wod_exercises,
             generated_at=datetime.datetime.now(datetime.UTC).isoformat()
         )
-        
+
+        # Save WOD to history
+        db = db_session()
+        try:
+            for exercise in wod_exercises:
+                history_entry = UserExerciseHistoryModel(
+                    user_email=g.user_email,
+                    exercise_id=exercise.id,
+                    date_assigned=date.today()
+                )
+                db.add(history_entry)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            print("Error saving exercise history:", e)
+        finally:
+            db.close()
+
         return jsonify(response.model_dump()), 200
         
     except Exception as e:
         return jsonify({"error": "Error generating workout of the day", "details": str(e)}), 500
+    
+@app.route("/history", methods=["GET"])
+@jwt_required
+def get_exercise_history():
+    try:
+        db = db_session()
+        history = (
+            db.query(UserExerciseHistoryModel)
+            .filter(UserExerciseHistoryModel.user_email == g.user_email)
+            .order_by(UserExerciseHistoryModel.date_assigned.desc())
+            .all()
+        )
+
+        history_data = [
+            {
+                "exercise_id": record.exercise_id,
+                "date_assigned": record.date_assigned.isoformat()
+            }
+            for record in history
+        ]
+        return jsonify({"history": history_data}), 200
+
+    except Exception as e:
+        return jsonify({"error": "Could not retrieve history", "details": str(e)}), 500
+    finally:
+        db.close()
+
 
 def run_app():
     """Entry point for the application script"""

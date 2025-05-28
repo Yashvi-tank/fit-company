@@ -5,10 +5,9 @@ from functools import wraps
 from flask import request, jsonify, g
 from ..models_db import UserModel
 from ..database import db_session
-from ..services.user_service import hash_password
+from ..services.user_service import verify_password  # ✅ use this instead of hash_password
 
-
-SECRET_KEY = "fit-secret-key" 
+SECRET_KEY = "fit-secret-key"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8
 
 def authenticate_user(email: str, password: str) -> Optional[UserModel]:
@@ -21,11 +20,10 @@ def authenticate_user(email: str, password: str) -> Optional[UserModel]:
         if not user:
             return None
         
-        # Check if password matches
-        hashed_password = hash_password(password)
-        if user.password_hash != hashed_password:
+        # ✅ Use proper password comparison
+        if not verify_password(user.password_hash, password):
             return None
-            
+
         return user
     finally:
         db.close()
@@ -35,15 +33,15 @@ def create_access_token(data: dict, expires_delta: Optional[datetime.timedelta] 
     Create a JWT token
     """
     to_encode = data.copy()
-    
+
     if expires_delta:
         expire = datetime.datetime.utcnow() + expires_delta
     else:
         expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    
+
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm="HS256")
-    
+
     return encoded_jwt
 
 def decode_token(token: str) -> dict:
@@ -64,29 +62,25 @@ def admin_required(f: Callable) -> Callable:
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check if Authorization header is present
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({"error": "Authorization header missing"}), 401
-        
-        # Check if it's a Bearer token
+
         parts = auth_header.split()
         if parts[0].lower() != 'bearer' or len(parts) != 2:
             return jsonify({"error": "Invalid authorization header format"}), 401
-        
+
         token = parts[1]
         payload = decode_token(token)
-        
-        # Check if token is valid
+
         if "error" in payload:
             return jsonify({"error": payload["error"]}), 401
-        
-        # Check if user has admin role
+
         if payload.get("role") != "admin":
             return jsonify({"error": "Admin privileges required"}), 403
-            
+
         return f(*args, **kwargs)
-    
+
     return decorated_function
 
 def jwt_required(f: Callable) -> Callable:
@@ -95,26 +89,21 @@ def jwt_required(f: Callable) -> Callable:
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check if Authorization header is present
         auth_header = request.headers.get('Authorization')
         if not auth_header:
             return jsonify({"error": "Authorization header missing"}), 401
-        
-        # Check if it's a Bearer token
+
         parts = auth_header.split()
         if parts[0].lower() != 'bearer' or len(parts) != 2:
             return jsonify({"error": "Invalid authorization header format"}), 401
-        
+
         token = parts[1]
         payload = decode_token(token)
-        
-        # Check if token is valid
+
         if "error" in payload:
             return jsonify({"error": payload["error"]}), 401
-        
-        # Store user email in Flask's g object for the view function to use
+
         g.user_email = payload.get("sub")
-            
         return f(*args, **kwargs)
-    
-    return decorated_function 
+
+    return decorated_function

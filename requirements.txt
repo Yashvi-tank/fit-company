@@ -1,0 +1,6 @@
+Flask
+psycopg2-binary
+SQLAlchemy
+python-dotenv
+pydantic
+PyJWT==2.8.0

@@ -1,8 +1,8 @@
-from sqlalchemy import Column, String, Float, Integer, Boolean, ForeignKey, Table, Text
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, String, Float, Integer, Boolean, ForeignKey, Table, Text, Date
 from sqlalchemy.orm import relationship
 from .database import Base
 
+# --------------------- User Model ---------------------
 class UserModel(Base):
     __tablename__ = "users"
 
@@ -11,16 +11,19 @@ class UserModel(Base):
     role = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
     
-    # Profile information (nullable as they'll be filled during onboarding)
+    # Onboarding profile data
     weight = Column(Float, nullable=True)
     height = Column(Float, nullable=True)
     fitness_goal = Column(String, nullable=True)
     onboarded = Column(String, default="false", nullable=False)
 
+    # Relationship to workout history
+    exercise_history = relationship("UserExerciseHistoryModel", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(email='{self.email}', name='{self.name}', role='{self.role}')>"
 
-# Junction table for the many-to-many relationship between exercises and muscle groups
+# --------------------- Junction Table ---------------------
 exercise_muscle_groups = Table(
     "exercise_muscle_groups",
     Base.metadata,
@@ -29,6 +32,7 @@ exercise_muscle_groups = Table(
     Column("is_primary", Boolean, default=False, nullable=False),
 )
 
+# --------------------- MuscleGroup Model ---------------------
 class MuscleGroupModel(Base):
     __tablename__ = "muscle_groups"
 
@@ -36,10 +40,9 @@ class MuscleGroupModel(Base):
     name = Column(String(100), unique=True, nullable=False)
     body_part = Column(String(50), nullable=False)
     description = Column(Text)
-    
-    # Relationship to exercises
+
     exercises = relationship(
-        "ExerciseModel", 
+        "ExerciseModel",
         secondary=exercise_muscle_groups,
         back_populates="muscle_groups"
     )
@@ -47,6 +50,7 @@ class MuscleGroupModel(Base):
     def __repr__(self):
         return f"<MuscleGroup(id={self.id}, name='{self.name}', body_part='{self.body_part}')>"
 
+# --------------------- Exercise Model ---------------------
 class ExerciseModel(Base):
     __tablename__ = "exercises"
 
@@ -56,13 +60,26 @@ class ExerciseModel(Base):
     difficulty = Column(Integer, nullable=False)
     equipment = Column(String(100))
     instructions = Column(Text)
-    
-    # Relationship to muscle groups
+
     muscle_groups = relationship(
         "MuscleGroupModel",
         secondary=exercise_muscle_groups,
         back_populates="exercises"
     )
 
+    assigned_users = relationship("UserExerciseHistoryModel", back_populates="exercise", cascade="all, delete-orphan")
+
     def __repr__(self):
-        return f"<Exercise(id={self.id}, name='{self.name}', difficulty={self.difficulty})>" 
+        return f"<Exercise(id={self.id}, name='{self.name}', difficulty={self.difficulty})>"
+
+# --------------------- Exercise History Model ---------------------
+class UserExerciseHistoryModel(Base):
+    __tablename__ = "user_exercise_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_email = Column(String, ForeignKey("users.email", ondelete="CASCADE"), nullable=False)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), nullable=False)
+    date_assigned = Column(Date, nullable=False)
+
+    user = relationship("UserModel", back_populates="exercise_history")
+    exercise = relationship("ExerciseModel", back_populates="assigned_users")

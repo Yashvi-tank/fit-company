@@ -74,7 +74,7 @@ class TestUserAPI(unittest.TestCase):
         )
         
         # Assert response
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 400)
         data = json.loads(response.data)
         self.assertIn('error', data)
 

@@ -2,36 +2,36 @@ from ..models_dto import UserSchema, UserResponseSchema, UserProfileSchema, User
 from ..models_db import UserModel
 from ..database import db_session
 from typing import List, Optional
-import random
-import string
-import hashlib
+from werkzeug.security import generate_password_hash, check_password_hash
 
 def generate_random_password(length=10):
-    """Generate a random password of specified length"""
+    import random
+    import string
     chars = string.ascii_letters + string.digits + string.punctuation
     return ''.join(random.choice(chars) for _ in range(length))
 
-def hash_password(password):
-    """Hash a password using SHA-256"""
-    return hashlib.sha256(password.encode()).hexdigest()
+def hash_password(password: str) -> str:
+    """Hash a password using werkzeug (with salt)"""
+    return generate_password_hash(password)
+
+def verify_password(hashed_password: str, plain_password: str) -> bool:
+    """Verify a password using werkzeug"""
+    return check_password_hash(hashed_password, plain_password)
 
 def create_user(user: UserSchema) -> UserResponseSchema:
     """
-    Create a new user with a random password and persist it to the database
+    Create a new user with the provided password or a random one if not set
     """
-    # Generate a random password
-    random_password = generate_random_password()
-    hashed_password = hash_password(random_password)
-    
-    # Convert Pydantic model to SQLAlchemy model
+    raw_password = getattr(user, "password", None) or generate_random_password()
+    hashed_password = hash_password(raw_password)
+
     db_user = UserModel(
         email=user.email,
         name=user.name,
         role=user.role,
         password_hash=hashed_password
     )
-    
-    # Add and commit to database
+
     db = db_session()
     try:
         db.add(db_user)
@@ -42,59 +42,67 @@ def create_user(user: UserSchema) -> UserResponseSchema:
         raise e
     finally:
         db.close()
-    
-    # Return response including the clear-text password (one-time reveal)
-    response = UserResponseSchema(
+
+    return UserResponseSchema(
         email=user.email,
         name=user.name,
         role=user.role,
-        password=random_password
+        password=raw_password
     )
-    
-    return response
 
-def get_all_users() -> List[UserSchema]:
-    """
-    Retrieve all users from the database
-    """
+
+def authenticate_user(email: str, password: str) -> Optional[UserModel]:
     db = db_session()
     try:
-        # Query all users from the database
+        print(f"[DEBUG] Authenticating: {email}")
+        user = db.query(UserModel).filter(UserModel.email == email).first()
+        if not user:
+            print("[ERROR] User not found in database.")
+            return None
+
+        print(f"[DEBUG] Found user: {user.email}")
+        print(f"[DEBUG] Stored hash: {user.password_hash}")
+        print(f"[DEBUG] Comparing with: {password}")
+
+        if verify_password(user.password_hash, password):
+            print("[DEBUG] Password verified successfully.")
+            return user
+        else:
+            print("[ERROR] Password verification failed.")
+            return None
+    finally:
+        db.close()
+
+
+def get_all_users() -> List[UserSchema]:
+    db = db_session()
+    try:
         db_users = db.query(UserModel).all()
-        
-        # Convert SQLAlchemy models to Pydantic models
         return [
             UserSchema(
-                email=db_user.email,
-                name=db_user.name,
-                role=db_user.role
-            )
-            for db_user in db_users
+                email=user.email,
+                name=user.name,
+                role=user.role
+            ) for user in db_users
         ]
     finally:
         db.close()
 
 def update_user_profile(email: str, profile: UserProfileSchema) -> Optional[UserProfileResponseSchema]:
-    """
-    Update user profile with weight, height, and fitness goal
-    """
     db = db_session()
     try:
-        # Find the user
         user = db.query(UserModel).filter(UserModel.email == email).first()
         if not user:
             return None
-            
-        # Update the user's profile
+
         user.weight = profile.weight
         user.height = profile.height
         user.fitness_goal = profile.fitness_goal
         user.onboarded = "true"
-        
+
         db.commit()
         db.refresh(user)
-        
-        # Return the updated user profile
+
         return UserProfileResponseSchema(
             email=user.email,
             name=user.name,
@@ -110,15 +118,12 @@ def update_user_profile(email: str, profile: UserProfileSchema) -> Optional[User
         db.close()
 
 def get_user_profile(email: str) -> Optional[UserProfileResponseSchema]:
-    """
-    Get user profile information
-    """
     db = db_session()
     try:
         user = db.query(UserModel).filter(UserModel.email == email).first()
         if not user:
             return None
-            
+
         return UserProfileResponseSchema(
             email=user.email,
             name=user.name,
