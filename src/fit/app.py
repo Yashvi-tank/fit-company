@@ -13,6 +13,7 @@ from .services.fitness_service import (
 )
 from .services.fitness_coach_service import calculate_intensity, request_wod
 import datetime
+from datetime import timezone
 import os
 import random
 
@@ -49,28 +50,23 @@ def get_all_users():
 @app.route("/bootstrap/admin", methods=["POST"])
 def create_bootstrap_admin():
     try:
-        # This endpoint should be secured with a special bootstrap key
         bootstrap_key = request.headers.get('X-Bootstrap-Key')
         if not bootstrap_key or bootstrap_key != BOOTSTRAP_KEY:
             return jsonify({"error": "Invalid bootstrap key"}), 401
-            
-        # Check if admin already exists to prevent multiple bootstraps
+
         db = db_session()
         admin_exists = db.query(UserModel).filter(UserModel.role == "admin").first() is not None
         db.close()
-        
+
         if admin_exists:
             return jsonify({"error": "Admin user already exists"}), 409
-            
-        # Create admin user
+
         admin_data = request.get_json()
-        admin_data["role"] = "admin"  # Ensure role is admin
-        
+        admin_data["role"] = "admin"
         admin_user = UserSchema.model_validate(admin_data)
         created_admin = create_user_service(admin_user)
-        
         return jsonify(created_admin.model_dump()), 201
-        
+
     except ValidationError as e:
         return jsonify({"error": "Invalid admin data", "details": e.errors()}), 400
     except Exception as e:
@@ -80,20 +76,13 @@ def create_bootstrap_admin():
 @jwt_required
 def onboard_user():
     try:
-        # Get user email from the JWT token (set by the jwt_required decorator)
         user_email = g.user_email
-        
-        # Parse and validate the profile data
         profile_data = request.get_json()
         profile = UserProfileSchema.model_validate(profile_data)
-        
-        # Update the user's profile
         updated_profile = update_user_profile(user_email, profile)
         if not updated_profile:
             return jsonify({"error": "User not found"}), 404
-            
         return jsonify(updated_profile.model_dump()), 200
-        
     except ValidationError as e:
         return jsonify({"error": "Invalid profile data", "details": e.errors()}), 400
     except Exception as e:
@@ -103,64 +92,55 @@ def onboard_user():
 @jwt_required
 def get_profile():
     try:
-        # Get user email from the JWT token
         user_email = g.user_email
-        
-        # Get the user's profile
         profile = get_user_profile(user_email)
         if not profile:
             return jsonify({"error": "User not found"}), 404
-            
         return jsonify(profile.model_dump()), 200
-        
     except Exception as e:
         return jsonify({"error": "Error retrieving profile", "details": str(e)}), 500
 
 @app.route("/oauth/token", methods=["POST"])
 def login():
     try:
-        # Check if content type is application/x-www-form-urlencoded (OAuth standard)
         content_type = request.headers.get('Content-Type', '')
         if 'application/x-www-form-urlencoded' in content_type:
             login_data = {
-                "email": request.form.get("username"),  # OAuth uses 'username' 
+                "email": request.form.get("username"),
                 "password": request.form.get("password")
             }
-        else:  # Fallback to JSON
+        else:
             login_data = request.get_json()
-            
+
         login_schema = LoginSchema.model_validate(login_data)
-        
         user = authenticate_user(login_schema.email, login_schema.password)
         if not user:
             return jsonify({"error": "Invalid credentials"}), 401
-        
-        # Create access token with standard OAuth claims
+
         access_token_expires = datetime.timedelta(minutes=30)
         token_data = {
             "sub": user.email,
             "name": user.name,
             "role": user.role,
-            "iss": "fit-api", 
-            "iat": datetime.datetime.now(datetime.UTC), 
+            "iss": "fit-api",
+            "iat": datetime.datetime.now(timezone.utc)
         }
-        
+
         access_token = create_access_token(
-            data=token_data, 
+            data=token_data,
             expires_delta=access_token_expires
         )
-        
+
         token = TokenSchema(
             access_token=access_token,
             token_type="bearer"
         )
-        
-        # Include onboarding status in response
+
         response_data = token.model_dump()
         response_data["onboarded"] = user.onboarded
-        
+
         return jsonify(response_data), 200
-        
+
     except ValidationError as e:
         return jsonify({"error": "Invalid login data", "details": e.errors()}), 400
     except Exception as e:
@@ -171,10 +151,8 @@ def get_exercises():
     try:
         muscle_group_id = request.args.get("muscle_group_id")
         if muscle_group_id:
-            # Get exercises for a specific muscle group
             exercises = get_exercises_by_muscle_group(int(muscle_group_id))
         else:
-            # Get all exercises
             exercises = get_all_exercises()
         return jsonify([ex.model_dump() for ex in exercises]), 200
     except Exception as e:
@@ -194,57 +172,45 @@ def get_exercise(exercise_id):
 @jwt_required
 def get_wod():
     try:
-        # Get the workout exercises with their muscle groups
         exercises_with_muscles = request_wod()
-        
-        # Convert to response schema
         wod_exercises = []
         for exercise, muscle_groups in exercises_with_muscles:
-            # Create muscle group impact objects
             muscle_impacts = [
                 MuscleGroupImpact(
                     id=mg.id,
                     name=mg.name,
                     body_part=mg.body_part,
                     is_primary=is_primary,
-                    # Higher intensity for primary muscle groups
                     intensity=calculate_intensity(exercise.difficulty) * (1.2 if is_primary else 0.8)
                 )
                 for mg, is_primary in muscle_groups
             ]
-            
-            # Create exercise object
+
             wod_exercise = WodExerciseSchema(
                 id=exercise.id,
                 name=exercise.name,
                 description=exercise.description,
                 difficulty=exercise.difficulty,
                 muscle_groups=muscle_impacts,
-                suggested_weight=random.uniform(5.0, 50.0),  # Random weight between 5 and 50 kg
-                suggested_reps=random.randint(8, 15)  # Random reps between 8 and 15
+                suggested_weight=random.uniform(5.0, 50.0),
+                suggested_reps=random.randint(8, 15)
             )
             wod_exercises.append(wod_exercise)
-        
+
         response = WodResponseSchema(
             exercises=wod_exercises,
-            generated_at=datetime.datetime.now(datetime.UTC).isoformat()
+            generated_at=datetime.datetime.now(timezone.utc).isoformat()
         )
-        
+
         return jsonify(response.model_dump()), 200
-        
+
     except Exception as e:
         return jsonify({"error": "Error generating workout of the day", "details": str(e)}), 500
 
 def run_app():
-    """Entry point for the application script"""
-    # Initialize the database before starting the app
     init_db()
-    
-    # Initialize fitness data
     init_fitness_data()
-    
     app.run(host="0.0.0.0", port=5000, debug=True)
 
 if __name__ == "__main__":
     run_app()
-

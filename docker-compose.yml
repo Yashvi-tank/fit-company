@@ -1,4 +1,5 @@
 version: "3.7"
+
 services:
   db:
     image: postgres:latest
@@ -11,10 +12,26 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=docker
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready", "-d", "fit-db"]
+      test: ["CMD-SHELL", "pg_isready -d fit-db"]
       interval: 5s
       timeout: 30s
       retries: 5
+    networks:
+      - fit
+
+  api:
+    image: python:3.10-slim
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: sh -c "pip install -r requirements.txt && python main.py"
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://postgres:docker@db:5432/fit-db
     networks:
       - fit
 
